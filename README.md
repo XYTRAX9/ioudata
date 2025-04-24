@@ -172,18 +172,6 @@ response = requests.get(
     headers={"Authorization": f"Bearer {token}"}
 )
 ```
-
-## Поддержка
-
-При возникновении проблем или вопросов обращайтесь:
-- Email: support@example.com
-- Телефон: +7 (XXX) XXX-XX-XX
-- Чат поддержки: доступен в личном кабинете
-
-## Лицензия
-
-MIT License
-
 ## Фронтенд
 
 ### Страницы для администраторов
