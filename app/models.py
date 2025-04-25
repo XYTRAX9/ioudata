@@ -10,9 +10,10 @@ class Employee(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-    stress_level = Column(Float)  # 0-1, где 1 - максимальный стресс
-    group = Column(String)  # "normal", "slightly_below", "significantly_below"
+    email = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    stress_level = Column(Integer, default=1)  # 1-5, где 5 - максимальный стресс
+    group = Column(String, default="normal")  # "normal", "slightly_below", "significantly_below"
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
     test_results = relationship("TestResult", back_populates="employee")
@@ -54,6 +55,7 @@ class Client(Base):
     name = Column(String, index=True)
     phone = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
+    hashed_password = Column(String)  # Добавляем поле для хранения пароля
     communication_history = relationship("Communication", back_populates="client")
     preferred_employees = Column(JSON, default=list)  # Список ID предпочитаемых сотрудников
     blacklisted_employees = Column(JSON, default=list)  # Список ID сотрудников, с которыми не хотят общаться
@@ -73,5 +75,6 @@ class Communication(Base):
     client_feedback = Column(JSON)  # Отзыв клиента
     employee_feedback = Column(JSON)  # Отзыв сотрудника
     tags = Column(JSON, default=list)  # Теги для категоризации звонка
+    details = Column(JSON, default=lambda: {"messages": []}) # Добавлено поле для сообщений чата
     client = relationship("Client", back_populates="communication_history")
     employee = relationship("Employee", back_populates="communications") 

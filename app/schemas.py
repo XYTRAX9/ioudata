@@ -4,8 +4,11 @@ from datetime import datetime
 
 class EmployeeBase(BaseModel):
     name: str
-    stress_level: float
-    group: str
+    email: str
+    is_active: bool = True
+    is_superuser: bool = False
+    group: str = "normal"
+    stress_level: int = 1
 
 class EmployeeCreate(EmployeeBase):
     password: str
@@ -86,9 +89,10 @@ class QuestionnaireRequest(BaseModel):
 class ClientBase(BaseModel):
     name: str
     phone: str
+    email: str
 
 class ClientCreate(ClientBase):
-    pass
+    password: str
 
 class Client(ClientBase):
     id: int
@@ -98,6 +102,9 @@ class Client(ClientBase):
     class Config:
         from_attributes = True
 
+class ClientInDB(Client):
+    hashed_password: str
+
 class CommunicationBase(BaseModel):
     client_id: int
     employee_id: int
@@ -106,8 +113,8 @@ class CommunicationBase(BaseModel):
     call_type: str
     status: str
     notes: Optional[str] = None
-    client_feedback: Optional[Dict[str, Any]] = None
-    employee_feedback: Optional[Dict[str, Any]] = None
+    client_feedback: Optional[Dict[str, Any]] = {}
+    employee_feedback: Optional[Dict[str, Any]] = {}
     tags: List[str] = []
 
 class CommunicationCreate(CommunicationBase):
@@ -127,4 +134,31 @@ class CommunicationUpdate(BaseModel):
     notes: Optional[str] = None
     client_feedback: Optional[Dict[str, Any]] = None
     employee_feedback: Optional[Dict[str, Any]] = None
-    tags: Optional[List[str]] = None 
+    tags: Optional[List[str]] = None
+
+class EmployeeProfile(BaseModel):
+    id: int
+    name: str
+    group: str
+    stress_level: float
+    communications: List[Communication]
+    test_results: List[TestResult]
+
+    class Config:
+        from_attributes = True
+
+class CommunicationFeedback(BaseModel):
+    rating: Optional[int] = None
+    comment: Optional[str] = None
+    tags: Optional[List[str]] = None
+    stress_level: Optional[int] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "rating": 4,
+                "comment": "Очень хорошее обслуживание",
+                "tags": ["быстро", "вежливо"],
+                "stress_level": 2
+            }
+        } 
