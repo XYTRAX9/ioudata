@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Float, DateTime, JSON, Text
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Float, DateTime, JSON, Text, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 import datetime
@@ -53,12 +53,16 @@ class Client(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
-    phone = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)  # Добавляем поле для хранения пароля
-    communication_history = relationship("Communication", back_populates="client")
-    preferred_employees = Column(JSON, default=list)  # Список ID предпочитаемых сотрудников
-    blacklisted_employees = Column(JSON, default=list)  # Список ID сотрудников, с которыми не хотят общаться
+    phone = Column(String, nullable=True)
+    hashed_password = Column(String)
+    preferred_employees = Column(ARRAY(Integer), default=list)
+    blacklisted_employees = Column(ARRAY(Integer), default=list)
+    created_at = Column(DateTime, default=datetime.datetime.now)
+    is_active = Column(Boolean, default=True)
+
+    # Отношения
+    communications = relationship("Communication", back_populates="client")
 
 class Communication(Base):
     __tablename__ = "communications"
@@ -76,5 +80,5 @@ class Communication(Base):
     employee_feedback = Column(JSON)  # Отзыв сотрудника
     tags = Column(JSON, default=list)  # Теги для категоризации звонка
     details = Column(JSON, default=lambda: {"messages": []}) # Добавлено поле для сообщений чата
-    client = relationship("Client", back_populates="communication_history")
+    client = relationship("Client", back_populates="communications")
     employee = relationship("Employee", back_populates="communications") 

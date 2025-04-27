@@ -109,7 +109,7 @@ class CommunicationBase(BaseModel):
     client_id: int
     employee_id: int
     duration: Optional[int] = None
-    success_rate: float
+    success_rate: Optional[float] = None
     call_type: str
     status: str
     notes: Optional[str] = None

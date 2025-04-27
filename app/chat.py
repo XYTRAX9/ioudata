@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 import logging
 import os
 import asyncio
+from . import models, schemas, security
+from . import crud
 
-from . import models, schemas, security, crud
+
 from .database import SessionLocal, engine
 
 # Настройка логирования

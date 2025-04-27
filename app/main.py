@@ -1,16 +1,16 @@
+import logging
+import uvicorn
+import asyncio
+import json
+import datetime
 from datetime import timedelta
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, APIRouter, WebSocket, WebSocketDisconnect, Form
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, func
 from typing import List, Dict, Any, Optional
-import datetime
-import json
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-import uvicorn
-import asyncio
-import logging
 
 from . import models, schemas, security, chat
 from .database import SessionLocal, engine, Base
@@ -25,10 +25,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-# Инициализируем базу данных
-init_db()
 
-app = FastAPI(title="Employee-Client Matching System")
+app = FastAPI(title="Employee-Client Matching System", redirect_slashes=False)
 
 # Настройка CORS
 app.add_middleware(
@@ -40,7 +38,7 @@ app.add_middleware(
 )
 
 # Настройка статических файлов
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Настройки JWT
 SECRET_KEY = "your-secret-key"  # В продакшене использовать безопасный ключ
@@ -48,7 +46,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 
 # Dependency
 def get_db():
@@ -68,6 +66,7 @@ clients_router = APIRouter(prefix="/clients", tags=["Клиенты"])
 communications_router = APIRouter(prefix="/communications", tags=["Коммуникации"])
 tests_router = APIRouter(prefix="/tests", tags=["Тесты"])
 profile_router = APIRouter(prefix="/profile", tags=["Профиль"])
+admin_router = APIRouter(prefix="/admin", tags=["Администрирование"])
 
 # Аутентификация
 @auth_router.post("/first-superuser/", response_model=schemas.Employee)
@@ -87,7 +86,7 @@ def create_first_superuser(
     
     hashed_password = security.get_password_hash(employee.password)
     db_employee = models.Employee(
-        **employee.model_dump(exclude={"password"}),
+        **employee.model_dump(exclude={"password", "is_active", "is_superuser"}),
         hashed_password=hashed_password,
         is_superuser=True
     )
@@ -151,9 +150,8 @@ def create_employee(
         raise HTTPException(status_code=400, detail="Name already registered")
     hashed_password = security.get_password_hash(employee.password)
     db_employee = models.Employee(
-        **employee.model_dump(exclude={"password"}),
+        **employee.model_dump(exclude={"password", "is_superuser"}),
         hashed_password=hashed_password,
-        is_active=True,
         is_superuser=False
     )
     db.add(db_employee)
@@ -198,7 +196,19 @@ def update_employee_group(
             detail=f"Invalid group. Must be one of: {', '.join(valid_groups)}"
         )
 
+    # Обновляем группу
     employee.group = group
+    
+    # Обновляем уровень стресса в соответствии с группой
+    if group == "normal":
+        employee.stress_level = 1  # Норма
+    elif group == "slightly_below":
+        employee.stress_level = 2  # Чуть ниже нормы
+    elif group == "significantly_below":
+        employee.stress_level = 3  # Значительно ниже нормы
+        
+    logger.info(f"Обновлены группа и уровень стресса для сотрудника {employee.id}: группа={group}, стресс={employee.stress_level}")
+    
     db.commit()
     db.refresh(employee)
     return employee
@@ -243,7 +253,7 @@ def create_client(
     current_employee: models.Employee = Depends(security.get_current_active_employee)
 ):
     """Создание нового клиента"""
-    db_client = models.Client(**client.dict())
+    db_client = models.Client(**client.model_dump())
     db.add(db_client)
     db.commit()
     db.refresh(db_client)
@@ -259,6 +269,21 @@ def read_clients(
     """Получение списка всех клиентов"""
     clients = db.query(models.Client).offset(skip).limit(limit).all()
     return clients
+
+@clients_router.delete("/{client_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_client(
+    client_id: int,
+    db: Session = Depends(get_db),
+    current_employee: models.Employee = Depends(security.get_current_superuser)
+):
+    """Удаление клиента. Доступно только суперпользователям."""
+    client = db.query(models.Client).filter(models.Client.id == client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    db.delete(client)
+    db.commit()
+    return None
 
 @clients_router.get("/me", response_model=schemas.Client)
 async def get_current_client(
@@ -408,7 +433,7 @@ def update_communication_feedback(
         raise HTTPException(status_code=403, detail="Not authorized to update this communication")
     
     # Обновляем отзыв
-    db_communication.employee_feedback = feedback.dict()
+    db_communication.employee_feedback = feedback.model_dump()
     
     # Обновляем успешность коммуникации
     if feedback.rating is not None:
@@ -422,14 +447,7 @@ def update_communication_feedback(
     db.refresh(db_communication)
     return db_communication
 
-@app.get("/employees/me", response_model=schemas.Employee)
-async def get_current_employee(
-    current_employee: models.Employee = Depends(security.get_current_employee)
-):
-    """Получение информации о текущем сотруднике"""
-    return current_employee
-
-@app.post("/communications/chat", response_model=schemas.Communication)
+@communications_router.post("/chat", response_model=schemas.Communication)
 async def create_chat_communication(
     communication: schemas.CommunicationCreate,
     db: Session = Depends(get_db),
@@ -437,7 +455,7 @@ async def create_chat_communication(
 ):
     """Создание новой записи о чате"""
     db_communication = models.Communication(
-        **communication.dict(),
+        **communication.model_dump(),
         timestamp=datetime.datetime.utcnow()
     )
     db.add(db_communication)
@@ -465,15 +483,14 @@ def create_multiple_choice_test(
                 status_code=400,
                 detail="Correct option index must be between 0 and 3"
             )
-        question_dict = question.dict()
+        question_dict = question.model_dump()
         question_dict["id"] = i + 1
         questions_with_ids.append(question_dict)
 
     db_test = models.MultipleChoiceTest(
         title=test.title,
         description=test.description,
-        questions=questions_with_ids,
-        is_active=True
+        questions=questions_with_ids
     )
     
     db.add(db_test)
@@ -493,6 +510,37 @@ def list_multiple_choice_tests(
         models.MultipleChoiceTest.is_active == True
     ).offset(skip).limit(limit).all()
     return tests
+
+@tests_router.put("/multiple-choice/{test_id}/toggle-status", response_model=schemas.MultipleChoiceTest)
+def toggle_test_status(
+    test_id: int,
+    db: Session = Depends(get_db),
+    current_employee: models.Employee = Depends(security.get_current_superuser)
+):
+    """Изменение статуса активности теста. Доступно только суперпользователям."""
+    test = db.query(models.MultipleChoiceTest).filter(models.MultipleChoiceTest.id == test_id).first()
+    if not test:
+        raise HTTPException(status_code=404, detail="Test not found")
+    
+    test.is_active = not test.is_active
+    db.commit()
+    db.refresh(test)
+    return test
+
+@tests_router.delete("/multiple-choice/{test_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_test(
+    test_id: int,
+    db: Session = Depends(get_db),
+    current_employee: models.Employee = Depends(security.get_current_superuser)
+):
+    """Удаление теста. Доступно только суперпользователям."""
+    test = db.query(models.MultipleChoiceTest).filter(models.MultipleChoiceTest.id == test_id).first()
+    if not test:
+        raise HTTPException(status_code=404, detail="Test not found")
+    
+    db.delete(test)
+    db.commit()
+    return None
 
 @tests_router.post("/multiple-choice/{test_id}/submit", response_model=schemas.TestResult)
 def submit_multiple_choice_test(
@@ -541,7 +589,7 @@ def submit_multiple_choice_test(
             "test_title": test.title,
             "total_questions": total_questions,
             "correct_answers": correct_answers,
-            "answers": [a.dict() for a in submission.answers]
+            "answers": [a.model_dump() for a in submission.answers]
         }
     )
     
@@ -579,14 +627,188 @@ async def get_employee_profile(
     
     return profile
 
-# Регистрация роутеров
-app.include_router(auth_router)
-app.include_router(employees_router)
-app.include_router(clients_router)
-app.include_router(communications_router)
-app.include_router(tests_router)
-app.include_router(profile_router)
-app.include_router(chat.router, prefix="/chat", tags=["Чат"])
+# Эндпоинты для админской статистики
+@admin_router.get("/stats/employees", tags=["Администрирование"])
+async def get_employees_stats(
+    db: Session = Depends(get_db),
+    current_employee: models.Employee = Depends(security.get_current_superuser)
+):
+    """Получение статистики по сотрудникам для администратора."""
+    total_employees = db.query(models.Employee).count()
+    active_employees = db.query(models.Employee).filter(models.Employee.is_active == True).count()
+    superusers = db.query(models.Employee).filter(models.Employee.is_superuser == True).count()
+    
+    by_group = {
+        "normal": db.query(models.Employee).filter(models.Employee.group == "normal").count(),
+        "slightly_below": db.query(models.Employee).filter(models.Employee.group == "slightly_below").count(),
+        "significantly_below": db.query(models.Employee).filter(models.Employee.group == "significantly_below").count()
+    }
+    
+    by_stress = {
+        "low (1-3)": db.query(models.Employee).filter(models.Employee.stress_level <= 3).count(),
+        "medium (4-7)": db.query(models.Employee).filter(models.Employee.stress_level > 3, models.Employee.stress_level <= 7).count(),
+        "high (8-10)": db.query(models.Employee).filter(models.Employee.stress_level > 7).count()
+    }
+    
+    return {
+        "total": total_employees,
+        "active": active_employees,
+        "inactive": total_employees - active_employees,
+        "superusers": superusers,
+        "by_group": by_group,
+        "by_stress": by_stress
+    }
+
+@admin_router.get("/stats/clients", tags=["Администрирование"])
+async def get_clients_stats(
+    db: Session = Depends(get_db),
+    current_employee: models.Employee = Depends(security.get_current_superuser)
+):
+    """Получение статистики по клиентам для администратора."""
+    total_clients = db.query(models.Client).count()
+    
+    # Количество клиентов с предпочтениями
+    with_preferences = db.query(models.Client).filter(models.Client.preferred_employees != None, models.Client.preferred_employees != "[]").count()
+    
+    # Количество клиентов с черным списком
+    with_blacklist = db.query(models.Client).filter(models.Client.blacklisted_employees != None, models.Client.blacklisted_employees != "[]").count()
+    
+    return {
+        "total": total_clients,
+        "with_preferences": with_preferences,
+        "with_blacklist": with_blacklist
+    }
+
+@admin_router.get("/stats/communications", tags=["Администрирование"])
+async def get_communications_stats(
+    db: Session = Depends(get_db),
+    current_employee: models.Employee = Depends(security.get_current_superuser)
+):
+    """Получение статистики по коммуникациям для администратора."""
+    total_communications = db.query(models.Communication).count()
+    
+    # Статистика по типам звонков
+    by_type = {}
+    types = db.query(models.Communication.call_type).distinct().all()
+    for type_tuple in types:
+        call_type = type_tuple[0]
+        count = db.query(models.Communication).filter(models.Communication.call_type == call_type).count()
+        by_type[call_type] = count
+    
+    # Статистика по статусам
+    by_status = {}
+    statuses = db.query(models.Communication.status).distinct().all()
+    for status_tuple in statuses:
+        status = status_tuple[0]
+        count = db.query(models.Communication).filter(models.Communication.status == status).count()
+        by_status[status] = count
+    
+    # Средний рейтинг успешности
+    avg_success = db.query(func.avg(models.Communication.success_rate)).scalar()
+    
+    return {
+        "total": total_communications,
+        "by_type": by_type,
+        "by_status": by_status,
+        "average_success_rate": avg_success
+    }
+
+@admin_router.get("/stats/tests", tags=["Администрирование"])
+async def get_tests_stats(
+    db: Session = Depends(get_db),
+    current_employee: models.Employee = Depends(security.get_current_superuser)
+):
+    """Получение статистики по тестам для администратора."""
+    total_tests = db.query(models.MultipleChoiceTest).count()
+    active_tests = db.query(models.MultipleChoiceTest).filter(models.MultipleChoiceTest.is_active == True).count()
+    
+    # Статистика по результатам тестов
+    total_results = db.query(models.TestResult).count()
+    avg_score = db.query(func.avg(models.TestResult.score)).scalar()
+    
+    # Распределение по баллам
+    score_distribution = {
+        "low (0-30%)": db.query(models.TestResult).filter(models.TestResult.score <= 30).count(),
+        "medium (31-70%)": db.query(models.TestResult).filter(models.TestResult.score > 30, models.TestResult.score <= 70).count(),
+        "high (71-100%)": db.query(models.TestResult).filter(models.TestResult.score > 70).count()
+    }
+    
+    return {
+        "tests": {
+            "total": total_tests,
+            "active": active_tests,
+            "inactive": total_tests - active_tests
+        },
+        "results": {
+            "total": total_results,
+            "average_score": avg_score,
+            "score_distribution": score_distribution
+        }
+    }
+
+@admin_router.get("/events", tags=["Администрирование"])
+async def get_admin_events(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_employee: models.Employee = Depends(security.get_current_superuser)
+):
+    """Получение последних событий для панели администратора."""
+    # Последние коммуникации
+    recent_communications = db.query(models.Communication).order_by(models.Communication.timestamp.desc()).limit(limit).all()
+    
+    # Последние результаты тестов
+    recent_test_results = db.query(models.TestResult).order_by(models.TestResult.timestamp.desc()).limit(limit).all()
+    
+    # Новые сотрудники
+    new_employees = db.query(models.Employee).order_by(models.Employee.id.desc()).limit(limit).all()
+    
+    # Новые клиенты
+    new_clients = db.query(models.Client).order_by(models.Client.id.desc()).limit(limit).all()
+    
+    events = []
+    
+    # Добавляем коммуникации
+    for comm in recent_communications:
+        events.append({
+            "type": "communication",
+            "timestamp": comm.timestamp,
+            "data": {
+                "id": comm.id,
+                "client_id": comm.client_id,
+                "employee_id": comm.employee_id,
+                "call_type": comm.call_type,
+                "status": comm.status,
+                "success_rate": comm.success_rate
+            }
+        })
+    
+    # Добавляем результаты тестов
+    for result in recent_test_results:
+        events.append({
+            "type": "test_result",
+            "timestamp": result.timestamp,
+            "data": {
+                "id": result.id,
+                "employee_id": result.employee_id,
+                "test_type": result.test_type,
+                "score": result.score
+            }
+        })
+    
+    # Сортируем события по времени
+    events.sort(key=lambda x: x["timestamp"], reverse=True)
+    
+    return events[:limit]
+
+# Подключаем все маршрутизаторы к основному приложению
+app.include_router(auth_router, prefix="/api")
+app.include_router(employees_router, prefix="/api")
+app.include_router(clients_router, prefix="/api")
+app.include_router(communications_router, prefix="/api")
+app.include_router(tests_router, prefix="/api")
+app.include_router(profile_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
+app.include_router(chat.router, prefix="/api/chat", tags=["Чат"])
 
 def update_employee_group_based_on_tests(employee_id: int, db: Session):
     """
@@ -619,19 +841,24 @@ def update_employee_group_based_on_tests(employee_id: int, db: Session):
 
     average_score = total_score / test_count
 
-    # Определяем группу на основе среднего балла
+    # Определяем группу и уровень стресса на основе среднего балла
     if average_score >= 0.7:
         new_group = "normal"
+        new_stress_level = 1  # Норма
     elif average_score >= 0.5:
         new_group = "slightly_below"
+        new_stress_level = 2  # Чуть ниже нормы
     else:
         new_group = "significantly_below"
+        new_stress_level = 3  # Значительно ниже нормы
 
-    # Обновляем группу, если она изменилась
-    if employee.group != new_group:
+    # Обновляем группу и уровень стресса, если они изменились
+    if employee.group != new_group or employee.stress_level != new_stress_level:
         employee.group = new_group
+        employee.stress_level = new_stress_level
         db.commit()
         db.refresh(employee)
+        logger.info(f"Обновлены группа и уровень стресса для сотрудника {employee.id}: группа={new_group}, стресс={new_stress_level}")
 
 @app.post("/api/auth-diagnostic", tags=["debug"])
 async def auth_diagnostic(
@@ -670,4 +897,4 @@ async def auth_diagnostic(
     return {"found": None, "valid_password": False}
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True) 
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=True) 
